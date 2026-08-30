@@ -1,0 +1,29 @@
+{
+  "entities": {
+    "JournalInteraction": {
+      "title": "Journal Interaction",
+      "description": "User reflection entry including prompts, AI synthesis, and takeaways",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "title": { "type": "string" },
+        "category": { "type": "string" },
+        "mood": { "type": "string" },
+        "createdAt": { "type": "number" },
+        "updatedAt": { "type": "number" },
+        "messages": { "type": "array" },
+        "summary": { "type": "string" },
+        "keyTakeaways": { "type": "array" },
+        "actionItems": { "type": "array" }
+      },
+      "required": ["userId", "title", "messages"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}/interactions/{interactionId}": {
+      "schema": "JournalInteraction",
+      "description": "User private reflection sessions and interactions"
+    }
+  }
+}

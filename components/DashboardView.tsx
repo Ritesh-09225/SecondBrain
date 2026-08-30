@@ -1,0 +1,380 @@
+"use client";
+
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { 
+  collection, 
+  doc, 
+  setDoc, 
+  deleteDoc, 
+  onSnapshot, 
+  query, 
+  orderBy,
+  serverTimestamp 
+} from "firebase/firestore";
+import { db } from "@/lib/firebase";
+import { useAuth } from "@/hooks/useAuth";
+import { JournalInteraction, JournalMessage, ReflectionMode } from "@/types/journal";
+import { HistorySidebar } from "./HistorySidebar";
+import { ReflectionEditor } from "./ReflectionEditor";
+import { sanitizeForFirestore } from "@/lib/sanitize";
+import { createId, createTimestamp } from "@/lib/id";
+
+export function DashboardView() {
+  const { user, signOut } = useAuth();
+  const [entries, setEntries] = useState<JournalInteraction[]>([]);
+  const [activeEntryId, setActiveEntryId] = useState<string | null>(null);
+  const [draftEntry, setDraftEntry] = useState<JournalInteraction | null>(null);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  
+  const [isLoadingAI, setIsLoadingAI] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<"saved" | "saving" | "error">("saved");
+  const [lastError, setLastError] = useState<string | null>(null);
+
+  // Keyboard shortcut listener: Cmd/Ctrl + B or Esc to manage sidebar
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "b") {
+        e.preventDefault();
+        setIsSidebarOpen((prev) => !prev);
+      } else if (e.key === "Escape" && isSidebarOpen && window.innerWidth < 1024) {
+        setIsSidebarOpen(false);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isSidebarOpen]);
+
+  // Keep a ref to the latest retry action if an operation failed
+  const retryActionRef = useRef<(() => void) | null>(null);
+
+  // 1. Listen to Firestore real-time collection for current user: users/{userId}/interactions
+  useEffect(() => {
+    if (!user?.uid) return;
+
+    const userInteractionsRef = collection(db, "users", user.uid, "interactions");
+    const q = query(userInteractionsRef, orderBy("updatedAt", "desc"));
+
+    const unsubscribe = onSnapshot(
+      q,
+      (snapshot) => {
+        const items: JournalInteraction[] = [];
+        snapshot.forEach((docSnap) => {
+          const data = docSnap.data();
+          const nowTs = createTimestamp();
+          items.push({
+            id: docSnap.id,
+            userId: user.uid,
+            title: data.title || "Untitled Reflection",
+            category: data.category || "General",
+            mood: data.mood || "Neutral",
+            createdAt: data.createdAt?.toMillis ? data.createdAt.toMillis() : (data.createdAt || nowTs),
+            updatedAt: data.updatedAt?.toMillis ? data.updatedAt.toMillis() : (data.updatedAt || nowTs),
+            messages: Array.isArray(data.messages) ? data.messages : [],
+            summary: data.summary,
+            keyTakeaways: data.keyTakeaways,
+            actionItems: data.actionItems,
+          });
+        });
+
+        setEntries(items);
+        setSaveStatus("saved");
+
+        // If no active entry is selected or current active entry was deleted, select first available
+        if (items.length > 0) {
+          setActiveEntryId((prev) => {
+            if (!prev || !items.some((e) => e.id === prev)) {
+              return items[0].id;
+            }
+            return prev;
+          });
+        }
+      },
+      (err) => {
+        console.error("Firestore sync error:", err);
+        setSaveStatus("error");
+        setLastError("Permission or network error when loading journal entries.");
+      }
+    );
+
+    return () => unsubscribe();
+  }, [user]);
+
+  // Derive activeEntry cleanly from entries or draft
+  const activeEntry: JournalInteraction | null = useMemo(() => {
+    if (draftEntry && draftEntry.id === activeEntryId) {
+      return draftEntry;
+    }
+    if (activeEntryId) {
+      return entries.find((e) => e.id === activeEntryId) || null;
+    }
+    return entries[0] || null;
+  }, [activeEntryId, entries, draftEntry]);
+
+  // 2. Create a new reflection session
+  const handleNewEntry = useCallback(() => {
+    if (!user?.uid) return;
+    const now = createTimestamp();
+    const newId = createId("entry");
+    const newInteraction: JournalInteraction = {
+      id: newId,
+      userId: user.uid,
+      title: "New Reflection",
+      category: "Personal",
+      createdAt: now,
+      updatedAt: now,
+      messages: [],
+    };
+
+    setDraftEntry(newInteraction);
+    setActiveEntryId(newId);
+    setLastError(null);
+  }, [user]);
+
+  // 3. Delete an entry from Firestore
+  const handleDeleteEntry = async (id: string) => {
+    if (!user?.uid) return;
+    try {
+      setSaveStatus("saving");
+      const docRef = doc(db, "users", user.uid, "interactions", id);
+      await deleteDoc(docRef);
+      setSaveStatus("saved");
+      if (activeEntryId === id) {
+        setDraftEntry(null);
+        const remaining = entries.filter((e) => e.id !== id);
+        if (remaining.length > 0) {
+          setActiveEntryId(remaining[0].id);
+        } else {
+          setActiveEntryId(null);
+        }
+      }
+    } catch (err: unknown) {
+      console.error("Delete error:", err);
+      setSaveStatus("error");
+      setLastError("Failed to delete journal entry.");
+    }
+  };
+
+  // 4. Update entry title in Firestore
+  const handleUpdateTitle = async (newTitle: string) => {
+    if (!user?.uid || !activeEntry) return;
+    const now = createTimestamp();
+    const updated: JournalInteraction = {
+      ...activeEntry,
+      title: newTitle,
+      updatedAt: now,
+    };
+    setDraftEntry(updated);
+
+    try {
+      setSaveStatus("saving");
+      const docRef = doc(db, "users", user.uid, "interactions", updated.id);
+      const cleanData = sanitizeForFirestore({
+        ...updated,
+        updatedAt: serverTimestamp(),
+      });
+      await setDoc(docRef, cleanData, { merge: true });
+      setSaveStatus("saved");
+    } catch (err) {
+      console.error("Title update error:", err);
+      setSaveStatus("error");
+      setLastError("Failed to save title update.");
+    }
+  };
+
+  // 5. Send message turn to Gemini & Save interaction to Firestore
+  const handleSendMessage = async (userPrompt: string, mode: ReflectionMode): Promise<boolean> => {
+    if (!user?.uid) return false;
+
+    setLastError(null);
+    setIsLoadingAI(true);
+    setSaveStatus("saving");
+
+    const now = createTimestamp();
+
+    // Ensure we have an active interaction container
+    let current = activeEntry;
+    if (!current) {
+      const newId = createId("entry");
+      current = {
+        id: newId,
+        userId: user.uid,
+        title: "New Reflection",
+        category: "Personal",
+        createdAt: now,
+        updatedAt: now,
+        messages: [],
+      };
+      setActiveEntryId(newId);
+    }
+
+    const userMessage: JournalMessage = {
+      id: createId("msg_u"),
+      role: "user",
+      content: userPrompt,
+      timestamp: now,
+      mode,
+    };
+
+    const intermediateMessages = [...current.messages, userMessage];
+    const intermediateInteraction: JournalInteraction = {
+      ...current,
+      messages: intermediateMessages,
+      updatedAt: now,
+    };
+
+    // Optimistically update UI
+    setDraftEntry(intermediateInteraction);
+
+    // Save user message immediately to Firestore (Guaranteed Input-to-Save Completeness)
+    const docRef = doc(db, "users", user.uid, "interactions", current.id);
+    try {
+      const cleanIntermediate = sanitizeForFirestore({
+        ...intermediateInteraction,
+        updatedAt: serverTimestamp(),
+      });
+      await setDoc(docRef, cleanIntermediate, { merge: true });
+    } catch (dbErr) {
+      console.error("Initial write failure:", dbErr);
+      setSaveStatus("error");
+      setLastError("Could not save your entry to Firestore. Please check your connection.");
+      setIsLoadingAI(false);
+      
+      retryActionRef.current = () => handleSendMessage(userPrompt, mode);
+      return false;
+    }
+
+    // Call Gemini API Route
+    try {
+      const contextHistory = current.messages.map((m) => ({
+        role: m.role,
+        content: m.content,
+      }));
+
+      const isFirstTurn = current.messages.length === 0 || current.title === "New Reflection";
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 35000);
+
+      const response = await fetch("/api/gemini", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
+        body: JSON.stringify({
+          prompt: userPrompt,
+          mode,
+          contextHistory,
+          generateTitle: isFirstTurn,
+        }),
+      });
+
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.details || errorData.error || `Server responded with ${response.status}`);
+      }
+
+      const data = await response.json();
+      const aiReply = data.reply || "I am reflecting on what you shared.";
+      const replyTs = createTimestamp();
+
+      const aiMessage: JournalMessage = {
+        id: createId("msg_m"),
+        role: "model",
+        content: aiReply,
+        timestamp: replyTs,
+      };
+
+      const finalMessages = [...intermediateMessages, aiMessage];
+      let finalTitle = current.title;
+
+      // Use generated title from server response if available
+      if (data.title && typeof data.title === "string") {
+        finalTitle = data.title;
+      } else if (isFirstTurn && (current.title === "New Reflection" || !current.title)) {
+        // Derivation fallback: clean 4-6 word excerpt
+        const cleanSnippet = userPrompt.split("\n")[0].trim().slice(0, 40);
+        finalTitle = cleanSnippet ? (cleanSnippet.length >= 40 ? cleanSnippet + "..." : cleanSnippet) : "Personal Reflection";
+      }
+
+      const finalInteraction: JournalInteraction = {
+        ...intermediateInteraction,
+        title: finalTitle,
+        messages: finalMessages,
+        updatedAt: replyTs,
+      };
+
+      // Persist complete session with AI response to Firestore
+      const cleanFinal = sanitizeForFirestore({
+        ...finalInteraction,
+        updatedAt: serverTimestamp(),
+      });
+      await setDoc(docRef, cleanFinal, { merge: true });
+
+      setDraftEntry(finalInteraction);
+      setSaveStatus("saved");
+      setIsLoadingAI(false);
+      return true;
+    } catch (apiErr: unknown) {
+      console.error("Gemini reflection error:", apiErr);
+      let msg = "Error generating AI reflection";
+      if (apiErr instanceof Error) {
+        if (apiErr.name === "AbortError") {
+          msg = "Request timed out. Please try again.";
+        } else {
+          msg = apiErr.message;
+        }
+      }
+      setSaveStatus("error");
+      setLastError(msg);
+      setIsLoadingAI(false);
+
+      retryActionRef.current = () => handleSendMessage(userPrompt, mode);
+      return false;
+    }
+  };
+
+  const handleRetry = () => {
+    if (retryActionRef.current) {
+      const action = retryActionRef.current;
+      retryActionRef.current = null;
+      action();
+    } else {
+      setLastError(null);
+    }
+  };
+
+  return (
+    <div className="flex h-screen w-screen overflow-hidden bg-[#0c0c0d] text-[#e4e4e7]">
+      {/* History Sidebar */}
+      <HistorySidebar
+        entries={entries}
+        activeEntryId={activeEntryId}
+        onSelectEntry={(id) => {
+          setActiveEntryId(id);
+          setLastError(null);
+        }}
+        onNewEntry={handleNewEntry}
+        onDeleteEntry={handleDeleteEntry}
+        user={user}
+        onSignOut={signOut}
+        isOpen={isSidebarOpen}
+        onClose={() => setIsSidebarOpen(false)}
+      />
+
+      {/* Main Reflection Editor */}
+      <ReflectionEditor
+        interaction={activeEntry}
+        onSendMessage={handleSendMessage}
+        onUpdateTitle={handleUpdateTitle}
+        isLoading={isLoadingAI}
+        saveStatus={saveStatus}
+        lastError={lastError}
+        onRetry={handleRetry}
+        isSidebarOpen={isSidebarOpen}
+        onToggleSidebar={() => setIsSidebarOpen((prev) => !prev)}
+        onOpenSidebar={() => setIsSidebarOpen(true)}
+      />
+    </div>
+  );
+}
