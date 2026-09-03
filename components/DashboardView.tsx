@@ -13,9 +13,12 @@ import {
 } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { useAuth } from "@/hooks/useAuth";
-import { JournalInteraction, JournalMessage, ReflectionMode } from "@/types/journal";
+import { JournalInteraction, JournalMessage, ReflectionMode, LocationPin } from "@/types/journal";
 import { HistorySidebar } from "./HistorySidebar";
 import { ReflectionEditor } from "./ReflectionEditor";
+import { LocationsExplorerModal } from "./maps/LocationsExplorerModal";
+import { SaveConfirmationToast, SaveToastData } from "./SaveConfirmationToast";
+import { SaveConfirmationModal } from "./SaveConfirmationModal";
 import { sanitizeForFirestore } from "@/lib/sanitize";
 import { createId, createTimestamp } from "@/lib/id";
 
@@ -25,10 +28,33 @@ export function DashboardView() {
   const [activeEntryId, setActiveEntryId] = useState<string | null>(null);
   const [draftEntry, setDraftEntry] = useState<JournalInteraction | null>(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const [isExplorerOpen, setIsExplorerOpen] = useState(false);
   
   const [isLoadingAI, setIsLoadingAI] = useState(false);
   const [saveStatus, setSaveStatus] = useState<"saved" | "saving" | "error">("saved");
   const [lastError, setLastError] = useState<string | null>(null);
+
+  // Persistence confirmation feedback state
+  const [saveToastData, setSaveToastData] = useState<SaveToastData | null>(null);
+  const [isConfirmationModalOpen, setIsConfirmationModalOpen] = useState(false);
+
+  const triggerSaveToast = (info: {
+    entryId: string;
+    title: string;
+    messageCount: number;
+    actionType?: SaveToastData["actionType"];
+  }) => {
+    if (!user?.uid) return;
+    setSaveToastData({
+      id: `toast_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+      entryId: info.entryId,
+      title: info.title || "Untitled Reflection",
+      timestamp: Date.now(),
+      messageCount: info.messageCount,
+      collectionPath: `/users/${user.uid}/interactions/${info.entryId}`,
+      actionType: info.actionType || "entry_saved",
+    });
+  };
 
   // Keyboard shortcut listener: Cmd/Ctrl + B or Esc to manage sidebar
   useEffect(() => {
@@ -174,10 +200,100 @@ export function DashboardView() {
       });
       await setDoc(docRef, cleanData, { merge: true });
       setSaveStatus("saved");
+      triggerSaveToast({
+        entryId: updated.id,
+        title: newTitle,
+        messageCount: updated.messages.length,
+        actionType: "title_updated",
+      });
     } catch (err) {
       console.error("Title update error:", err);
       setSaveStatus("error");
       setLastError("Failed to save title update.");
+    }
+  };
+
+  // 4b. Update entry location in Firestore
+  const handleUpdateLocation = async (location: LocationPin | null) => {
+    if (!user?.uid) return;
+    const now = createTimestamp();
+
+    // Ensure we have an active container
+    let current = activeEntry;
+    if (!current) {
+      const newId = createId("entry");
+      current = {
+        id: newId,
+        userId: user.uid,
+        title: "New Reflection",
+        category: "Personal",
+        createdAt: now,
+        updatedAt: now,
+        messages: [],
+      };
+      setActiveEntryId(newId);
+    }
+
+    const updated: JournalInteraction = {
+      ...current,
+      location: location || undefined,
+      updatedAt: now,
+    };
+    setDraftEntry(updated);
+
+    try {
+      setSaveStatus("saving");
+      const docRef = doc(db, "users", user.uid, "interactions", current.id);
+      
+      const payloadToSanitize = {
+        ...updated,
+        location: location || null,
+        updatedAt: serverTimestamp(),
+      };
+      const cleanData = sanitizeForFirestore(payloadToSanitize);
+      
+      await setDoc(docRef, cleanData, { merge: true });
+      setSaveStatus("saved");
+      triggerSaveToast({
+        entryId: current.id,
+        title: updated.title,
+        messageCount: updated.messages.length,
+        actionType: "location_pinned",
+      });
+    } catch (err) {
+      console.error("Location update error:", err);
+      setSaveStatus("error");
+      setLastError("Failed to save location to journal entry.");
+    }
+  };
+
+  // 4c. Explicit Manual Save
+  const handleManualSave = async () => {
+    if (!user?.uid || !activeEntry) return;
+    try {
+      setSaveStatus("saving");
+      const now = createTimestamp();
+      const updated: JournalInteraction = {
+        ...activeEntry,
+        updatedAt: now,
+      };
+      const docRef = doc(db, "users", user.uid, "interactions", updated.id);
+      const cleanData = sanitizeForFirestore({
+        ...updated,
+        updatedAt: serverTimestamp(),
+      });
+      await setDoc(docRef, cleanData, { merge: true });
+      setSaveStatus("saved");
+      triggerSaveToast({
+        entryId: updated.id,
+        title: updated.title,
+        messageCount: updated.messages.length,
+        actionType: "entry_saved",
+      });
+    } catch (err) {
+      console.error("Manual save error:", err);
+      setSaveStatus("error");
+      setLastError("Failed to save journal entry to Firestore.");
     }
   };
 
@@ -314,6 +430,12 @@ export function DashboardView() {
       setDraftEntry(finalInteraction);
       setSaveStatus("saved");
       setIsLoadingAI(false);
+      triggerSaveToast({
+        entryId: current.id,
+        title: finalTitle,
+        messageCount: finalMessages.length,
+        actionType: "reflection_generated",
+      });
       return true;
     } catch (apiErr: unknown) {
       console.error("Gemini reflection error:", apiErr);
@@ -356,6 +478,7 @@ export function DashboardView() {
         }}
         onNewEntry={handleNewEntry}
         onDeleteEntry={handleDeleteEntry}
+        onOpenExplorer={() => setIsExplorerOpen(true)}
         user={user}
         onSignOut={signOut}
         isOpen={isSidebarOpen}
@@ -367,6 +490,9 @@ export function DashboardView() {
         interaction={activeEntry}
         onSendMessage={handleSendMessage}
         onUpdateTitle={handleUpdateTitle}
+        onUpdateLocation={handleUpdateLocation}
+        onManualSave={handleManualSave}
+        onOpenSaveConfirmation={() => setIsConfirmationModalOpen(true)}
         isLoading={isLoadingAI}
         saveStatus={saveStatus}
         lastError={lastError}
@@ -374,6 +500,33 @@ export function DashboardView() {
         isSidebarOpen={isSidebarOpen}
         onToggleSidebar={() => setIsSidebarOpen((prev) => !prev)}
         onOpenSidebar={() => setIsSidebarOpen(true)}
+      />
+
+      {/* Interactive Places Explorer Map Modal */}
+      <LocationsExplorerModal
+        isOpen={isExplorerOpen}
+        onClose={() => setIsExplorerOpen(false)}
+        entries={entries}
+        onSelectEntry={(id) => {
+          setActiveEntryId(id);
+          setIsExplorerOpen(false);
+        }}
+      />
+
+      {/* Toast Notification for Firestore Persistence */}
+      <SaveConfirmationToast
+        toastData={saveToastData}
+        onDismiss={() => setSaveToastData(null)}
+        onOpenDetails={() => setIsConfirmationModalOpen(true)}
+      />
+
+      {/* Full Confirmation Dialog for Firestore Persistence */}
+      <SaveConfirmationModal
+        isOpen={isConfirmationModalOpen}
+        onClose={() => setIsConfirmationModalOpen(false)}
+        toastData={saveToastData}
+        activeEntry={activeEntry}
+        userId={user?.uid}
       />
     </div>
   );

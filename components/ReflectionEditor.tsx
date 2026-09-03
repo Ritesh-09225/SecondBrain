@@ -15,10 +15,15 @@ import {
   Minimize2,
   ChevronDown,
   ChevronUp,
-  SlidersHorizontal
+  SlidersHorizontal,
+  MapPin,
+  Utensils,
+  Cloud
 } from "lucide-react";
-import { JournalInteraction, ReflectionMode, JournalMessage } from "@/types/journal";
+import { JournalInteraction, ReflectionMode, JournalMessage, LocationPin } from "@/types/journal";
 import { MarkdownRenderer } from "./MarkdownRenderer";
+import { LocationCard } from "./maps/LocationCard";
+import { LocationPickerModal } from "./maps/LocationPickerModal";
 
 export type ContentWidth = "compact" | "medium" | "wide";
 
@@ -26,6 +31,10 @@ interface ReflectionEditorProps {
   interaction: JournalInteraction | null;
   onSendMessage: (text: string, mode: ReflectionMode) => Promise<boolean>;
   onUpdateTitle: (title: string) => Promise<void>;
+  onUpdateLocation?: (location: LocationPin | null) => Promise<void>;
+  onOpenExplorer?: () => void;
+  onManualSave?: () => Promise<void>;
+  onOpenSaveConfirmation?: () => void;
   isLoading: boolean;
   saveStatus: "saved" | "saving" | "error";
   lastError: string | null;
@@ -75,6 +84,10 @@ export function ReflectionEditor({
   interaction,
   onSendMessage,
   onUpdateTitle,
+  onUpdateLocation,
+  onOpenExplorer,
+  onManualSave,
+  onOpenSaveConfirmation,
   isLoading,
   saveStatus,
   lastError,
@@ -103,6 +116,7 @@ export function ReflectionEditor({
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [isLocationPickerOpen, setIsLocationPickerOpen] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -260,10 +274,16 @@ export function ReflectionEditor({
                   </>
                 )}
                 {saveStatus === "saved" && (
-                  <>
+                  <button
+                    id="synced-status-badge"
+                    type="button"
+                    onClick={onOpenSaveConfirmation}
+                    title="Saved to Firestore. Click to view confirmation & document details."
+                    className="flex items-center gap-1 hover:text-[#d4ff33] transition-colors cursor-pointer"
+                  >
                     <Check className="w-2.5 h-2.5 text-[#d4ff33]" />
                     <span className="text-[#d4ff33]">SYNCED</span>
-                  </>
+                  </button>
                 )}
                 {saveStatus === "error" && (
                   <>
@@ -307,6 +327,45 @@ export function ReflectionEditor({
               <span>•</span>
               <span className="text-[#d4ff33]/80">GEMINI 3.1 FLASH-LITE (COST OPTIMIZED)</span>
             </div>
+
+            {/* Pin Location Button */}
+            {interaction?.location ? (
+              <button
+                id="header-location-pinned-btn"
+                onClick={() => setIsLocationPickerOpen(true)}
+                title="View / edit pinned eatery or location"
+                className="pill-btn flex items-center gap-1.5 border-[#d4ff33]/50 text-[#d4ff33] bg-[#d4ff33]/10 hover:bg-[#d4ff33]/20"
+              >
+                <MapPin className="w-3 h-3 text-[#d4ff33]" />
+                <span className="hidden sm:inline max-w-[130px] truncate">{interaction.location.name}</span>
+                <span className="sm:hidden font-mono text-[0.55rem]">PIN</span>
+              </button>
+            ) : (
+              <button
+                id="header-pin-location-btn"
+                onClick={() => setIsLocationPickerOpen(true)}
+                title="Pin an eatery or place to this journal entry"
+                className="pill-btn flex items-center gap-1.5 hover:border-[#d4ff33] hover:text-[#d4ff33]"
+              >
+                <MapPin className="w-3 h-3 text-[rgba(228,228,231,0.6)]" />
+                <span className="hidden sm:inline">PIN LOCATION</span>
+              </button>
+            )}
+
+            {/* Manual Save Button */}
+            {onManualSave && (
+              <button
+                id="header-save-entry-btn"
+                type="button"
+                onClick={onManualSave}
+                disabled={isLoading || saveStatus === "saving"}
+                title="Save current journal entry to Firestore"
+                className="pill-btn flex items-center gap-1.5 text-[0.6rem] hover:border-[#d4ff33] hover:text-[#d4ff33] disabled:opacity-30 cursor-pointer"
+              >
+                <Cloud className="w-3 h-3 text-[#d4ff33]" />
+                <span className="hidden sm:inline">SAVE</span>
+              </button>
+            )}
 
             <button
               id="export-reflection-btn"
@@ -382,7 +441,19 @@ export function ReflectionEditor({
 
       {/* Workspace Scroll Stream */}
       <div className="flex-1 overflow-y-auto px-4 sm:px-8 py-12 custom-scroll">
-        <div className={`w-full ${WIDTH_CONFIG[contentWidth].maxW} mx-auto space-y-16 transition-all duration-300`}>
+        <div className={`w-full ${WIDTH_CONFIG[contentWidth].maxW} mx-auto space-y-12 transition-all duration-300`}>
+        {/* Pinned Location Card if present */}
+        {interaction?.location && (
+          <div className="location-pin-container">
+            <LocationCard
+              location={interaction.location}
+              reflectionTitle={interaction.title}
+              onEdit={() => setIsLocationPickerOpen(true)}
+              onRemove={() => onUpdateLocation?.(null)}
+            />
+          </div>
+        )}
+
         {messages.length === 0 ? (
           <div className="py-8 text-center max-w-2xl mx-auto space-y-8">
             <div className="space-y-3">
@@ -568,6 +639,23 @@ export function ReflectionEditor({
                     </button>
                   );
                 })}
+
+                {/* Quick Pin Location Action */}
+                <button
+                  id="prompt-pin-location-btn"
+                  type="button"
+                  onClick={() => setIsLocationPickerOpen(true)}
+                  className={`pill-btn flex items-center gap-1 text-[0.6rem] ${
+                    interaction?.location ? "border-[#d4ff33]/50 text-[#d4ff33] bg-[#d4ff33]/10" : "text-[rgba(228,228,231,0.6)] hover:text-[#d4ff33]"
+                  }`}
+                  title={interaction?.location ? `Pinned: ${interaction.location.name}` : "Pin an eatery or spot to this reflection"}
+                >
+                  <MapPin className="w-3 h-3 text-[#d4ff33]" />
+                  <span className="hidden sm:inline">
+                    {interaction?.location ? interaction.location.name.slice(0, 16) + (interaction.location.name.length > 16 ? "..." : "") : "Pin Spot"}
+                  </span>
+                  <span className="sm:hidden">Pin</span>
+                </button>
               </div>
 
               <div className="flex items-center gap-3 shrink-0">
@@ -651,6 +739,18 @@ export function ReflectionEditor({
           </div>
         )}
       </div>
+
+      {/* Location Picker Modal */}
+      <LocationPickerModal
+        isOpen={isLocationPickerOpen}
+        onClose={() => setIsLocationPickerOpen(false)}
+        initialLocation={interaction?.location}
+        onSaveLocation={async (loc) => {
+          if (onUpdateLocation) {
+            await onUpdateLocation(loc);
+          }
+        }}
+      />
     </main>
   );
 }

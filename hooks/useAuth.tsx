@@ -35,25 +35,49 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    // Ensure persistent login session
-    setPersistence(auth, browserLocalPersistence).catch(() => {
-      // Ignored if already configured
-    });
+    // Failsafe timeout: If Firebase auth listener takes longer than 2.5s (e.g. inside sandboxed iframe),
+    // release the loading screen so user can view the landing page and interact.
+    const safetyTimer = setTimeout(() => {
+      setLoading(false);
+    }, 2500);
 
-    const unsubscribe = onAuthStateChanged(
-      auth,
-      (currentUser) => {
-        setUser(currentUser);
-        setLoading(false);
-      },
-      (err) => {
-        console.error("Auth state error:", err);
-        setError("Failed to monitor authentication state.");
-        setLoading(false);
-      }
-    );
+    // Attempt local persistence gracefully
+    try {
+      setPersistence(auth, browserLocalPersistence).catch((err) => {
+        console.warn("Auth persistence warning (ignorable in iframe):", err);
+      });
+    } catch {
+      // Ignored if persistence not supported
+    }
 
-    return () => unsubscribe();
+    let unsubscribe = () => {};
+    try {
+      unsubscribe = onAuthStateChanged(
+        auth,
+        (currentUser) => {
+          clearTimeout(safetyTimer);
+          setUser(currentUser);
+          setLoading(false);
+        },
+        (err) => {
+          clearTimeout(safetyTimer);
+          console.error("Auth state error:", err);
+          setError("Failed to monitor authentication state.");
+          setLoading(false);
+        }
+      );
+    } catch (e) {
+      clearTimeout(safetyTimer);
+      console.error("Failed to bind auth observer:", e);
+      setTimeout(() => {
+        setLoading(false);
+      }, 0);
+    }
+
+    return () => {
+      clearTimeout(safetyTimer);
+      unsubscribe();
+    };
   }, []);
 
   const signInWithGoogle = async () => {

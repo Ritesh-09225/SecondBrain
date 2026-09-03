@@ -1,0 +1,20 @@
+import { NextResponse } from "next/server";
+
+export async function GET() {
+  const apiKey =
+    process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY?.trim() ||
+    process.env.GOOGLE_MAPS_API_KEY?.trim() ||
+    "";
+
+  return NextResponse.json(
+    {
+      apiKey,
+      isConfigured: Boolean(apiKey && apiKey.length > 5),
+    },
+    {
+      headers: {
+        "Cache-Control": "no-store, max-age=0",
+      },
+    }
+  );
+}

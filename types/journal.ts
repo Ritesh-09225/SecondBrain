@@ -4,6 +4,22 @@ export type ReflectionMode =
   | "brainstorm"   // Actionable next steps, ideas, and creative paths
   | "reframe";     // Cognitive reframing and positive perspective shifts
 
+export interface LocationPin {
+  placeId: string;
+  name: string;
+  formattedAddress: string;
+  coordinates: {
+    lat: number;
+    lng: number;
+  };
+  rating?: number;
+  photoUri?: string;
+  googleMapsUrl?: string;
+  userNotes?: string;
+  category?: "eatery" | "cafe" | "scenic" | "landmark" | "bar" | "general";
+  createdAt?: string;
+}
+
 export interface JournalMessage {
   id: string;
   role: "user" | "model";
@@ -21,6 +37,7 @@ export interface JournalInteraction {
   createdAt: number;
   updatedAt: number;
   messages: JournalMessage[];
+  location?: LocationPin | null;
   summary?: string;
   keyTakeaways?: string[];
   actionItems?: string[];

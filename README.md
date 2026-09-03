@@ -54,6 +54,12 @@ gcloud secrets add-iam-policy-binding GEMINI_API_KEY \
   --role="roles/secretmanager.secretAccessor"
 ```
 
+### Google Maps Platform Setup (Location-Aware Entries)
+
+1. Enable **Maps JavaScript API**, **Places API (New)**, and **Geocoding API** in the Google Cloud Console.
+2. Create an API Key and enforce **Application Restrictions** (HTTP referrers for authorized domains) and **API Restrictions** (limiting only to the 3 required Maps APIs).
+3. Set `NEXT_PUBLIC_GOOGLE_MAPS_API_KEY` in your environment or Secret Manager.
+
 ---
 
 ## 4. Firestore Security Rules

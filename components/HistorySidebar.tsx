@@ -6,7 +6,8 @@ import {
   Search, 
   BookOpen, 
   Trash2, 
-  X
+  X,
+  MapPin
 } from "lucide-react";
 import { JournalInteraction } from "@/types/journal";
 import { User } from "firebase/auth";
@@ -17,6 +18,7 @@ interface HistorySidebarProps {
   onSelectEntry: (id: string) => void;
   onNewEntry: () => void;
   onDeleteEntry: (id: string) => void;
+  onOpenExplorer?: () => void;
   user: User | null;
   onSignOut: () => void;
   isOpen: boolean;
@@ -29,6 +31,7 @@ export function HistorySidebar({
   onSelectEntry,
   onNewEntry,
   onDeleteEntry,
+  onOpenExplorer,
   user,
   onSignOut,
   isOpen,
@@ -37,14 +40,21 @@ export function HistorySidebar({
   const [searchQuery, setSearchQuery] = useState("");
   const [entryToDelete, setEntryToDelete] = useState<string | null>(null);
 
+  const pinnedLocationsCount = entries.filter((e) => Boolean(e.location)).length;
+
   const filteredEntries = entries.filter((entry) => {
     const query = searchQuery.toLowerCase().trim();
     if (!query) return true;
     const titleMatch = entry.title.toLowerCase().includes(query);
+    const locationMatch = entry.location ? (
+      entry.location.name.toLowerCase().includes(query) ||
+      entry.location.formattedAddress.toLowerCase().includes(query) ||
+      (entry.location.userNotes && entry.location.userNotes.toLowerCase().includes(query))
+    ) : false;
     const contentMatch = entry.messages.some((m) => 
       m.content.toLowerCase().includes(query)
     );
-    return titleMatch || contentMatch;
+    return titleMatch || locationMatch || contentMatch;
   });
 
   const formatDate = (timestamp: number) => {
@@ -118,18 +128,35 @@ export function HistorySidebar({
 
         {/* Sidebar Content */}
         <div className="flex-1 overflow-y-auto p-4 custom-scroll">
-          {/* New Reflection CTA */}
-          <button
-            id="new-reflection-btn"
-            onClick={() => {
-              onNewEntry();
-              if (window.innerWidth < 1024) onClose();
-            }}
-            className="w-full p-4 bg-[#d4ff33] hover:bg-[#e2ff66] active:scale-[0.99] text-[#0c0c0d] font-syne font-bold uppercase tracking-wider text-xs border-none cursor-pointer mb-8 flex items-center justify-center gap-2 transition-all shadow-md"
-          >
-            <Plus className="w-4 h-4 text-[#0c0c0d] stroke-[3]" />
-            <span>New Reflection</span>
-          </button>
+          {/* New Reflection & Places Explorer CTA Group */}
+          <div className="space-y-2 mb-8">
+            <button
+              id="new-reflection-btn"
+              onClick={() => {
+                onNewEntry();
+                if (window.innerWidth < 1024) onClose();
+              }}
+              className="w-full p-3.5 bg-[#d4ff33] hover:bg-[#e2ff66] active:scale-[0.99] text-[#0c0c0d] font-syne font-bold uppercase tracking-wider text-xs border-none cursor-pointer flex items-center justify-center gap-2 transition-all shadow-md"
+            >
+              <Plus className="w-4 h-4 text-[#0c0c0d] stroke-[3]" />
+              <span>New Reflection</span>
+            </button>
+
+            {onOpenExplorer && (
+              <button
+                id="open-places-explorer-btn"
+                onClick={() => {
+                  onOpenExplorer();
+                  if (window.innerWidth < 1024) onClose();
+                }}
+                className="w-full p-2.5 bg-[#18181b] hover:bg-[#202024] hover:border-[#d4ff33] text-[#e4e4e7] hover:text-[#d4ff33] font-mono uppercase tracking-wider text-[0.65rem] border border-[rgba(228,228,231,0.15)] cursor-pointer flex items-center justify-center gap-2 transition-all"
+                title="Open interactive Google Map of all pinned spots"
+              >
+                <MapPin className="w-3.5 h-3.5 text-[#d4ff33]" />
+                <span>Places Map ({pinnedLocationsCount})</span>
+              </button>
+            )}
+          </div>
 
           {/* Search Box */}
           <div className="mb-8">
@@ -207,11 +234,18 @@ export function HistorySidebar({
                     </div>
                   ) : (
                     <>
-                      <h3 className={`font-syne text-[0.9rem] font-bold mb-2 truncate ${
+                      <h3 className={`font-syne text-[0.9rem] font-bold mb-1.5 truncate ${
                         isActive ? "text-[#e4e4e7]" : "text-[rgba(228,228,231,0.8)] group-hover:text-[#e4e4e7]"
                       }`}>
                         {entry.title || "Untitled Reflection"}
                       </h3>
+
+                      {entry.location && (
+                        <div className="flex items-center gap-1.5 mb-2 font-mono text-[0.6rem] text-[#d4ff33] bg-[#0c0c0d] px-2 py-0.5 border border-[#d4ff33]/30 w-fit max-w-full">
+                          <MapPin className="w-2.5 h-2.5 shrink-0 text-[#d4ff33]" />
+                          <span className="truncate">{entry.location.name}</span>
+                        </div>
+                      )}
 
                       <p className="text-[0.75rem] text-[rgba(228,228,231,0.5)] leading-[1.5] line-clamp-2">
                         {previewMessage}
