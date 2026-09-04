@@ -5,16 +5,16 @@ import { GoogleMapsWrapper } from '@/components/maps/GoogleMapsWrapper';
 
 export const metadata: Metadata = {
   title: 'Gemini Reflection Journal',
-  description: 'A private, user-authenticated reflection and journaling web application powered by cost-optimized Gemini 3.1 Flash-Lite and Cloud Firestore with Google Sign-In.',
+  description: 'A private, user-authenticated reflection and journaling web application with an interactive daily schedule planner, powered by cost-optimized Gemini 3.1 Flash-Lite and Cloud Firestore with Google Sign-In.',
   openGraph: {
     title: 'Gemini Reflection Journal',
-    description: 'A private, user-authenticated reflection and journaling web application powered by cost-optimized Gemini 3.1 Flash-Lite and Cloud Firestore with Google Sign-In.',
+    description: 'A private, user-authenticated reflection and journaling web application with an interactive daily schedule planner, powered by cost-optimized Gemini 3.1 Flash-Lite and Cloud Firestore with Google Sign-In.',
     type: 'website',
   },
   twitter: {
     card: 'summary_large_image',
     title: 'Gemini Reflection Journal',
-    description: 'A private, user-authenticated reflection and journaling web application powered by cost-optimized Gemini 3.1 Flash-Lite and Cloud Firestore with Google Sign-In.',
+    description: 'A private, user-authenticated reflection and journaling web application with an interactive daily schedule planner, powered by cost-optimized Gemini 3.1 Flash-Lite and Cloud Firestore with Google Sign-In.',
   },
 };
 

@@ -19,8 +19,10 @@ import { ReflectionEditor } from "./ReflectionEditor";
 import { LocationsExplorerModal } from "./maps/LocationsExplorerModal";
 import { SaveConfirmationToast, SaveToastData } from "./SaveConfirmationToast";
 import { SaveConfirmationModal } from "./SaveConfirmationModal";
+import { DailyScheduleSection } from "./DailyScheduleSection";
 import { sanitizeForFirestore } from "@/lib/sanitize";
 import { createId, createTimestamp } from "@/lib/id";
+import { stripHtml } from "@/lib/htmlUtils";
 
 export function DashboardView() {
   const { user, signOut } = useAuth();
@@ -29,6 +31,7 @@ export function DashboardView() {
   const [draftEntry, setDraftEntry] = useState<JournalInteraction | null>(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isExplorerOpen, setIsExplorerOpen] = useState(false);
+  const [activeView, setActiveView] = useState<"reflection" | "schedule">("reflection");
   
   const [isLoadingAI, setIsLoadingAI] = useState(false);
   const [saveStatus, setSaveStatus] = useState<"saved" | "saving" | "error">("saved");
@@ -38,7 +41,7 @@ export function DashboardView() {
   const [saveToastData, setSaveToastData] = useState<SaveToastData | null>(null);
   const [isConfirmationModalOpen, setIsConfirmationModalOpen] = useState(false);
 
-  const triggerSaveToast = (info: {
+  const triggerSaveToast = useCallback((info: {
     entryId: string;
     title: string;
     messageCount: number;
@@ -54,7 +57,7 @@ export function DashboardView() {
       collectionPath: `/users/${user.uid}/interactions/${info.entryId}`,
       actionType: info.actionType || "entry_saved",
     });
-  };
+  }, [user]);
 
   // Keyboard shortcut listener: Cmd/Ctrl + B or Esc to manage sidebar
   useEffect(() => {
@@ -72,6 +75,7 @@ export function DashboardView() {
 
   // Keep a ref to the latest retry action if an operation failed
   const retryActionRef = useRef<(() => void) | null>(null);
+  const handleSendMessageRef = useRef<((userPrompt: string, mode: ReflectionMode) => Promise<boolean>) | null>(null);
 
   // 1. Listen to Firestore real-time collection for current user: users/{userId}/interactions
   useEffect(() => {
@@ -153,6 +157,7 @@ export function DashboardView() {
 
     setDraftEntry(newInteraction);
     setActiveEntryId(newId);
+    setActiveView("reflection");
     setLastError(null);
   }, [user]);
 
@@ -298,7 +303,7 @@ export function DashboardView() {
   };
 
   // 5. Send message turn to Gemini & Save interaction to Firestore
-  const handleSendMessage = async (userPrompt: string, mode: ReflectionMode): Promise<boolean> => {
+  const handleSendMessage = useCallback(async (userPrompt: string, mode: ReflectionMode): Promise<boolean> => {
     if (!user?.uid) return false;
 
     setLastError(null);
@@ -355,15 +360,16 @@ export function DashboardView() {
       setLastError("Could not save your entry to Firestore. Please check your connection.");
       setIsLoadingAI(false);
       
-      retryActionRef.current = () => handleSendMessage(userPrompt, mode);
+      retryActionRef.current = () => handleSendMessageRef.current?.(userPrompt, mode);
       return false;
     }
 
     // Call Gemini API Route
     try {
+      const plainPrompt = stripHtml(userPrompt) || userPrompt;
       const contextHistory = current.messages.map((m) => ({
         role: m.role,
-        content: m.content,
+        content: stripHtml(m.content) || m.content,
       }));
 
       const isFirstTurn = current.messages.length === 0 || current.title === "New Reflection";
@@ -376,7 +382,7 @@ export function DashboardView() {
         headers: { "Content-Type": "application/json" },
         signal: controller.signal,
         body: JSON.stringify({
-          prompt: userPrompt,
+          prompt: plainPrompt,
           mode,
           contextHistory,
           generateTitle: isFirstTurn,
@@ -409,7 +415,7 @@ export function DashboardView() {
         finalTitle = data.title;
       } else if (isFirstTurn && (current.title === "New Reflection" || !current.title)) {
         // Derivation fallback: clean 4-6 word excerpt
-        const cleanSnippet = userPrompt.split("\n")[0].trim().slice(0, 40);
+        const cleanSnippet = plainPrompt.split("\n")[0].trim().slice(0, 40);
         finalTitle = cleanSnippet ? (cleanSnippet.length >= 40 ? cleanSnippet + "..." : cleanSnippet) : "Personal Reflection";
       }
 
@@ -451,10 +457,144 @@ export function DashboardView() {
       setLastError(msg);
       setIsLoadingAI(false);
 
-      retryActionRef.current = () => handleSendMessage(userPrompt, mode);
+      retryActionRef.current = () => handleSendMessageRef.current?.(userPrompt, mode);
       return false;
     }
-  };
+  }, [user, activeEntry, triggerSaveToast]);
+
+  // Save rich formatted journal entry directly without AI query
+  const handleSaveEntryOnly = useCallback(async (content: string): Promise<boolean> => {
+    if (!user?.uid) return false;
+    setLastError(null);
+    setSaveStatus("saving");
+    const now = createTimestamp();
+
+    let current = activeEntry;
+    if (!current) {
+      const newId = createId("entry");
+      const plain = stripHtml(content);
+      const cleanSnippet = plain.split("\n")[0].trim().slice(0, 40);
+      current = {
+        id: newId,
+        userId: user.uid,
+        title: cleanSnippet ? (cleanSnippet.length >= 40 ? cleanSnippet + "..." : cleanSnippet) : "Personal Reflection",
+        category: "Personal",
+        createdAt: now,
+        updatedAt: now,
+        messages: [],
+      };
+      setActiveEntryId(newId);
+    }
+
+    const userMessage: JournalMessage = {
+      id: createId("msg_u"),
+      role: "user",
+      content,
+      timestamp: now,
+    };
+
+    const updatedMessages = [...current.messages, userMessage];
+    const updatedInteraction: JournalInteraction = {
+      ...current,
+      messages: updatedMessages,
+      updatedAt: now,
+    };
+
+    setDraftEntry(updatedInteraction);
+    const docRef = doc(db, "users", user.uid, "interactions", current.id);
+    try {
+      const clean = sanitizeForFirestore({
+        ...updatedInteraction,
+        updatedAt: serverTimestamp(),
+      });
+      await setDoc(docRef, clean, { merge: true });
+      setSaveStatus("saved");
+      triggerSaveToast({
+        entryId: current.id,
+        title: updatedInteraction.title,
+        messageCount: updatedMessages.length,
+        actionType: "entry_saved",
+      });
+      return true;
+    } catch (dbErr) {
+      console.error("Save entry failure:", dbErr);
+      setSaveStatus("error");
+      setLastError("Could not save your entry to Firestore.");
+      return false;
+    }
+  }, [user, activeEntry, triggerSaveToast]);
+
+  // Update existing message in Firestore
+  const handleUpdateMessage = useCallback(async (messageId: string, updatedContent: string): Promise<void> => {
+    if (!user?.uid || !activeEntry) return;
+    setSaveStatus("saving");
+    const now = createTimestamp();
+    const updatedMessages = activeEntry.messages.map((m) =>
+      m.id === messageId ? { ...m, content: updatedContent } : m
+    );
+    const updatedInteraction: JournalInteraction = {
+      ...activeEntry,
+      messages: updatedMessages,
+      updatedAt: now,
+    };
+    setDraftEntry(updatedInteraction);
+    const docRef = doc(db, "users", user.uid, "interactions", activeEntry.id);
+    try {
+      const clean = sanitizeForFirestore({
+        ...updatedInteraction,
+        updatedAt: serverTimestamp(),
+      });
+      await setDoc(docRef, clean, { merge: true });
+      setSaveStatus("saved");
+      triggerSaveToast({
+        entryId: activeEntry.id,
+        title: activeEntry.title,
+        messageCount: updatedMessages.length,
+        actionType: "entry_saved",
+      });
+    } catch (err) {
+      console.error("Update message error:", err);
+      setSaveStatus("error");
+      setLastError("Failed to update journal entry in Firestore.");
+    }
+  }, [user, activeEntry, triggerSaveToast]);
+
+  // Delete individual message from Firestore
+  const handleDeleteMessage = useCallback(async (messageId: string): Promise<void> => {
+    if (!user?.uid || !activeEntry) return;
+    setSaveStatus("saving");
+    const now = createTimestamp();
+    const updatedMessages = activeEntry.messages.filter((m) => m.id !== messageId);
+    const updatedInteraction: JournalInteraction = {
+      ...activeEntry,
+      messages: updatedMessages,
+      updatedAt: now,
+    };
+    setDraftEntry(updatedInteraction);
+    const docRef = doc(db, "users", user.uid, "interactions", activeEntry.id);
+    try {
+      const clean = sanitizeForFirestore({
+        ...updatedInteraction,
+        updatedAt: serverTimestamp(),
+      });
+      await setDoc(docRef, clean, { merge: true });
+      setSaveStatus("saved");
+      triggerSaveToast({
+        entryId: activeEntry.id,
+        title: activeEntry.title,
+        messageCount: updatedMessages.length,
+        actionType: "entry_saved",
+      });
+    } catch (err) {
+      console.error("Delete message error:", err);
+      setSaveStatus("error");
+      setLastError("Failed to delete journal entry from Firestore.");
+    }
+  }, [user, activeEntry, triggerSaveToast]);
+
+  useEffect(() => {
+    handleSendMessageRef.current = handleSendMessage;
+  }, [handleSendMessage]);
 
   const handleRetry = () => {
     if (retryActionRef.current) {
@@ -466,6 +606,36 @@ export function DashboardView() {
     }
   };
 
+  // 6. Create a reflection session pre-populated from Daily Schedule
+  const handleNewEntryWithPrompt = useCallback(
+    (initialPrompt: string) => {
+      if (!user?.uid) return;
+      const now = createTimestamp();
+      const newId = createId("entry");
+      const todayStr = new Date().toLocaleDateString("en-US", { month: "short", day: "numeric" });
+      const newInteraction: JournalInteraction = {
+        id: newId,
+        userId: user.uid,
+        title: `Schedule Reflection — ${todayStr}`,
+        category: "Planning",
+        createdAt: now,
+        updatedAt: now,
+        messages: [],
+      };
+
+      setDraftEntry(newInteraction);
+      setActiveEntryId(newId);
+      setActiveView("reflection");
+      setLastError(null);
+
+      // Trigger automatic synthesis turn
+      setTimeout(() => {
+        handleSendMessage(initialPrompt, "reflect");
+      }, 150);
+    },
+    [user, handleSendMessage]
+  );
+
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-[#0c0c0d] text-[#e4e4e7]">
       {/* History Sidebar */}
@@ -474,33 +644,50 @@ export function DashboardView() {
         activeEntryId={activeEntryId}
         onSelectEntry={(id) => {
           setActiveEntryId(id);
+          setActiveView("reflection");
           setLastError(null);
         }}
         onNewEntry={handleNewEntry}
         onDeleteEntry={handleDeleteEntry}
         onOpenExplorer={() => setIsExplorerOpen(true)}
+        onOpenSchedule={() => setActiveView("schedule")}
+        activeView={activeView}
         user={user}
         onSignOut={signOut}
         isOpen={isSidebarOpen}
         onClose={() => setIsSidebarOpen(false)}
       />
 
-      {/* Main Reflection Editor */}
-      <ReflectionEditor
-        interaction={activeEntry}
-        onSendMessage={handleSendMessage}
-        onUpdateTitle={handleUpdateTitle}
-        onUpdateLocation={handleUpdateLocation}
-        onManualSave={handleManualSave}
-        onOpenSaveConfirmation={() => setIsConfirmationModalOpen(true)}
-        isLoading={isLoadingAI}
-        saveStatus={saveStatus}
-        lastError={lastError}
-        onRetry={handleRetry}
-        isSidebarOpen={isSidebarOpen}
-        onToggleSidebar={() => setIsSidebarOpen((prev) => !prev)}
-        onOpenSidebar={() => setIsSidebarOpen(true)}
-      />
+      {/* Main Content Area: Daily Schedule vs Reflection Editor */}
+      {activeView === "schedule" ? (
+        <div className="flex-1 flex flex-col h-screen overflow-hidden">
+          <DailyScheduleSection
+            user={user}
+            onSendToReflection={handleNewEntryWithPrompt}
+            onClose={() => setActiveView("reflection")}
+          />
+        </div>
+      ) : (
+        <ReflectionEditor
+          interaction={activeEntry}
+          onSendMessage={handleSendMessage}
+          onSaveEntryOnly={handleSaveEntryOnly}
+          onUpdateMessage={handleUpdateMessage}
+          onDeleteMessage={handleDeleteMessage}
+          onUpdateTitle={handleUpdateTitle}
+          onUpdateLocation={handleUpdateLocation}
+          onManualSave={handleManualSave}
+          onOpenSaveConfirmation={() => setIsConfirmationModalOpen(true)}
+          onOpenSchedule={() => setActiveView("schedule")}
+          isLoading={isLoadingAI}
+          saveStatus={saveStatus}
+          lastError={lastError}
+          onRetry={handleRetry}
+          isSidebarOpen={isSidebarOpen}
+          onToggleSidebar={() => setIsSidebarOpen((prev) => !prev)}
+          onOpenSidebar={() => setIsSidebarOpen(true)}
+        />
+      )}
 
       {/* Interactive Places Explorer Map Modal */}
       <LocationsExplorerModal
@@ -509,6 +696,7 @@ export function DashboardView() {
         entries={entries}
         onSelectEntry={(id) => {
           setActiveEntryId(id);
+          setActiveView("reflection");
           setIsExplorerOpen(false);
         }}
       />

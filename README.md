@@ -78,6 +78,11 @@ service cloud.firestore {
       match /interactions/{interactionId} {
         allow read, write: if request.auth != null && request.auth.uid == userId;
       }
+
+      // Isolated daily schedules (daily planner time blocks, progress, objectives)
+      match /schedules/{scheduleId} {
+        allow read, write: if request.auth != null && request.auth.uid == userId;
+      }
     }
 
     // Default deny all other paths

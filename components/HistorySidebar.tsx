@@ -7,9 +7,11 @@ import {
   BookOpen, 
   Trash2, 
   X,
-  MapPin
+  MapPin,
+  Calendar
 } from "lucide-react";
 import { JournalInteraction } from "@/types/journal";
+import { stripHtml } from "@/lib/htmlUtils";
 import { User } from "firebase/auth";
 
 interface HistorySidebarProps {
@@ -19,6 +21,8 @@ interface HistorySidebarProps {
   onNewEntry: () => void;
   onDeleteEntry: (id: string) => void;
   onOpenExplorer?: () => void;
+  onOpenSchedule?: () => void;
+  activeView?: "reflection" | "schedule";
   user: User | null;
   onSignOut: () => void;
   isOpen: boolean;
@@ -32,6 +36,8 @@ export function HistorySidebar({
   onNewEntry,
   onDeleteEntry,
   onOpenExplorer,
+  onOpenSchedule,
+  activeView = "reflection",
   user,
   onSignOut,
   isOpen,
@@ -142,6 +148,25 @@ export function HistorySidebar({
               <span>New Reflection</span>
             </button>
 
+            {onOpenSchedule && (
+              <button
+                id="open-daily-schedule-sidebar-btn"
+                onClick={() => {
+                  onOpenSchedule();
+                  if (window.innerWidth < 1024) onClose();
+                }}
+                className={`w-full p-2.5 font-mono uppercase tracking-wider text-[0.65rem] border cursor-pointer flex items-center justify-center gap-2 transition-all ${
+                  activeView === "schedule"
+                    ? "bg-[#d4ff33]/20 border-[#d4ff33] text-[#d4ff33] font-bold"
+                    : "bg-[#18181b] hover:bg-[#202024] hover:border-[#d4ff33] text-[#e4e4e7] hover:text-[#d4ff33] border-[rgba(228,228,231,0.15)]"
+                }`}
+                title="Open editable Daily Schedule Table"
+              >
+                <Calendar className="w-3.5 h-3.5 text-[#d4ff33]" />
+                <span>Daily Schedule Table</span>
+              </button>
+            )}
+
             {onOpenExplorer && (
               <button
                 id="open-places-explorer-btn"
@@ -198,7 +223,8 @@ export function HistorySidebar({
             filteredEntries.map((entry) => {
               const isActive = entry.id === activeEntryId;
               const isDeleting = entryToDelete === entry.id;
-              const previewMessage = entry.messages[entry.messages.length - 1]?.content || "Empty reflection";
+              const rawPreview = entry.messages[entry.messages.length - 1]?.content || "Empty reflection";
+              const previewMessage = stripHtml(rawPreview) || "Empty reflection";
 
               return (
                 <div

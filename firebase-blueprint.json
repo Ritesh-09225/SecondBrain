@@ -18,12 +18,32 @@
         "actionItems": { "type": "array" }
       },
       "required": ["userId", "title", "messages"]
+    },
+    "DailySchedule": {
+      "title": "Daily Schedule",
+      "description": "User daily schedule with time slots, activities, category, status, and notes",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "date": { "type": "string" },
+        "title": { "type": "string" },
+        "goalOfTheDay": { "type": "string" },
+        "items": { "type": "array" },
+        "createdAt": { "type": "number" },
+        "updatedAt": { "type": "number" }
+      },
+      "required": ["userId", "date", "items"]
     }
   },
   "firestore": {
     "/users/{userId}/interactions/{interactionId}": {
       "schema": "JournalInteraction",
       "description": "User private reflection sessions and interactions"
+    },
+    "/users/{userId}/schedules/{scheduleId}": {
+      "schema": "DailySchedule",
+      "description": "User private daily schedule table and time blocks"
     }
   }
 }

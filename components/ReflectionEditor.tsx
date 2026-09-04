@@ -18,21 +18,34 @@ import {
   SlidersHorizontal,
   MapPin,
   Utensils,
-  Cloud
+  Cloud,
+  Calendar,
+  FileEdit,
+  Save,
+  Type,
+  PenLine
 } from "lucide-react";
 import { JournalInteraction, ReflectionMode, JournalMessage, LocationPin } from "@/types/journal";
 import { MarkdownRenderer } from "./MarkdownRenderer";
+import { RichTextRenderer } from "./RichTextRenderer";
+import { RichTextEditor } from "./RichTextEditor";
+import { EditEntryModal } from "./EditEntryModal";
 import { LocationCard } from "./maps/LocationCard";
 import { LocationPickerModal } from "./maps/LocationPickerModal";
+import { stripHtml } from "@/lib/htmlUtils";
 
 export type ContentWidth = "compact" | "medium" | "wide";
 
 interface ReflectionEditorProps {
   interaction: JournalInteraction | null;
   onSendMessage: (text: string, mode: ReflectionMode) => Promise<boolean>;
+  onSaveEntryOnly?: (content: string) => Promise<boolean>;
+  onUpdateMessage?: (messageId: string, updatedContent: string) => Promise<void>;
+  onDeleteMessage?: (messageId: string) => Promise<void>;
   onUpdateTitle: (title: string) => Promise<void>;
   onUpdateLocation?: (location: LocationPin | null) => Promise<void>;
   onOpenExplorer?: () => void;
+  onOpenSchedule?: () => void;
   onManualSave?: () => Promise<void>;
   onOpenSaveConfirmation?: () => void;
   isLoading: boolean;
@@ -83,9 +96,13 @@ const WIDTH_CONFIG: Record<ContentWidth, { maxW: string; label: string; desc: st
 export function ReflectionEditor({
   interaction,
   onSendMessage,
+  onSaveEntryOnly,
+  onUpdateMessage,
+  onDeleteMessage,
   onUpdateTitle,
   onUpdateLocation,
   onOpenExplorer,
+  onOpenSchedule,
   onManualSave,
   onOpenSaveConfirmation,
   isLoading,
@@ -97,6 +114,12 @@ export function ReflectionEditor({
   onToggleSidebar,
 }: ReflectionEditorProps) {
   const [inputText, setInputText] = useState("");
+  const [editorFormat, setEditorFormat] = useState<"rich" | "plain">("rich");
+  const [richHtml, setRichHtml] = useState("");
+  const [richPlainText, setRichPlainText] = useState("");
+  const [isSavingEntry, setIsSavingEntry] = useState(false);
+  const [editingMessage, setEditingMessage] = useState<JournalMessage | null>(null);
+
   const [selectedMode, setSelectedMode] = useState<ReflectionMode>("reflect");
   const [contentWidth, setContentWidth] = useState<ContentWidth>(() => {
     if (typeof window !== "undefined") {
@@ -164,6 +187,47 @@ export function ReflectionEditor({
     }
   };
 
+  const handleRichSubmit = async () => {
+    const payload = richHtml.trim() || richPlainText.trim();
+    if (!payload || isLoading) return;
+
+    const backupHtml = richHtml;
+    setRichHtml("");
+    setRichPlainText("");
+
+    const success = await onSendMessage(payload, selectedMode);
+    if (!success) {
+      setRichHtml(backupHtml);
+    }
+  };
+
+  const handleSaveOnly = async () => {
+    const payload = editorFormat === "rich" 
+      ? (richHtml.trim() || richPlainText.trim()) 
+      : inputText.trim();
+    if (!payload || isSavingEntry || !onSaveEntryOnly) return;
+
+    setIsSavingEntry(true);
+    try {
+      const success = await onSaveEntryOnly(payload);
+      if (success) {
+        setRichHtml("");
+        setRichPlainText("");
+        setInputText("");
+      }
+    } finally {
+      setIsSavingEntry(false);
+    }
+  };
+
+  const handleSelectStarter = (starter: (typeof PROMPT_STARTERS)[0]) => {
+    setSelectedMode(starter.mode);
+    setRichHtml(`<p>${starter.prompt}</p>`);
+    setRichPlainText(starter.prompt);
+    setInputText(starter.prompt);
+    setIsPromptRetracted(false);
+  };
+
   const handleSubmit = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     const textToSend = inputText.trim();
@@ -203,7 +267,7 @@ export function ReflectionEditor({
 
     interaction.messages.forEach((msg) => {
       const speaker = msg.role === "user" ? "### User Reflection" : "### Aether (Gemini 3.6 Flash)";
-      markdown += `${speaker} (${new Date(msg.timestamp).toLocaleTimeString()})\n\n${msg.content}\n\n---\n\n`;
+      markdown += `${speaker} (${new Date(msg.timestamp).toLocaleTimeString()})\n\n${stripHtml(msg.content)}\n\n---\n\n`;
     });
 
     const blob = new Blob([markdown], { type: "text/markdown" });
@@ -327,6 +391,20 @@ export function ReflectionEditor({
               <span>•</span>
               <span className="text-[#d4ff33]/80">GEMINI 3.1 FLASH-LITE (COST OPTIMIZED)</span>
             </div>
+
+            {/* Daily Schedule Quick Access Button */}
+            {onOpenSchedule && (
+              <button
+                id="header-open-schedule-btn"
+                onClick={onOpenSchedule}
+                title="Open Daily Schedule Table"
+                className="pill-btn flex items-center gap-1.5 hover:border-[#d4ff33] hover:text-[#d4ff33] cursor-pointer"
+              >
+                <Calendar className="w-3 h-3 text-[#d4ff33]" />
+                <span className="hidden sm:inline">DAILY SCHEDULE</span>
+                <span className="sm:hidden font-mono text-[0.55rem]">SCHEDULE</span>
+              </button>
+            )}
 
             {/* Pin Location Button */}
             {interaction?.location ? (
@@ -474,11 +552,7 @@ export function ReflectionEditor({
                 <button
                   key={i}
                   id={`prompt-starter-${i}`}
-                  onClick={() => {
-                    setInputText(starter.prompt);
-                    setSelectedMode(starter.mode);
-                    textareaRef.current?.focus();
-                  }}
+                  onClick={() => handleSelectStarter(starter)}
                   className="p-6 border border-[rgba(228,228,231,0.1)] hover:border-[#d4ff33] bg-[#141415] transition-all text-left group cursor-pointer"
                 >
                   <div className="flex items-center justify-between text-xs font-syne font-bold text-[#e4e4e7] group-hover:text-[#d4ff33] mb-2 uppercase tracking-wide">
@@ -505,13 +579,53 @@ export function ReflectionEditor({
                 {/* User Message */}
                 {isUser ? (
                   <div className="user-message flex flex-col items-end w-full">
-                    <div className="content font-syne text-xl sm:text-2xl md:text-[1.5rem] font-bold text-[#e4e4e7] leading-[1.2] tracking-[-0.02em] text-right whitespace-pre-wrap">
-                      &lsquo;{msg.content}&rsquo;
-                    </div>
-                    <div className="meta-strip font-mono text-[0.55rem] uppercase tracking-[0.1em] text-[rgba(228,228,231,0.5)] flex items-center justify-end gap-3 mt-2">
-                      <span>REFLECT_SENT</span>
-                      <span>•</span>
-                      <span>{new Date(msg.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+                    <div className="w-full max-w-2xl bg-[#141415] border border-[rgba(228,228,231,0.12)] hover:border-[rgba(228,228,231,0.25)] rounded p-5 transition-all shadow-sm">
+                      {/* Header Strip */}
+                      <div className="flex items-center justify-between pb-3 mb-3 border-b border-[rgba(228,228,231,0.08)]">
+                        <div className="flex items-center gap-2">
+                          <span className="w-2 h-2 rounded-full bg-[#d4ff33]" />
+                          <span className="font-mono text-[0.6rem] uppercase tracking-wider text-[#d4ff33] font-bold">
+                            Personal Reflection
+                          </span>
+                          <span className="text-[rgba(228,228,231,0.2)] text-xs font-mono">•</span>
+                          <span className="font-mono text-[0.55rem] text-[rgba(228,228,231,0.5)] uppercase tracking-wider">
+                            JOURNAL ENTRY
+                          </span>
+                        </div>
+
+                        <div className="flex items-center gap-2 font-mono text-[0.55rem] text-[rgba(228,228,231,0.5)] uppercase tracking-wider">
+                          <span>{new Date(msg.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+                          <span>•</span>
+                          {onUpdateMessage && (
+                            <button
+                              id={`edit-btn-${msg.id}`}
+                              onClick={() => setEditingMessage(msg)}
+                              title="Edit formatted journal entry"
+                              className="p-1 hover:text-[#d4ff33] text-[rgba(228,228,231,0.5)] rounded transition-colors cursor-pointer flex items-center gap-1"
+                            >
+                              <FileEdit className="w-3.5 h-3.5" />
+                              <span className="text-[0.55rem]">EDIT</span>
+                            </button>
+                          )}
+                          <button
+                            id={`copy-user-btn-${msg.id}`}
+                            onClick={() => handleCopy(msg.id, stripHtml(msg.content))}
+                            title="Copy plain text"
+                            className="p-1 hover:text-[#d4ff33] text-[rgba(228,228,231,0.5)] rounded transition-colors cursor-pointer"
+                          >
+                            {copiedId === msg.id ? (
+                              <Check className="w-3.5 h-3.5 text-[#d4ff33]" />
+                            ) : (
+                              <Copy className="w-3.5 h-3.5" />
+                            )}
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Content Rendered with Formatting */}
+                      <div className="content text-[#e4e4e7] text-sm md:text-base leading-relaxed">
+                        <RichTextRenderer content={msg.content} />
+                      </div>
                     </div>
                   </div>
                 ) : (
@@ -618,31 +732,43 @@ export function ReflectionEditor({
       {/* Input Composer & Controls */}
       <div className="input-area px-4 sm:px-8 border-t border-[rgba(228,228,231,0.1)] bg-[#0c0c0d] shrink-0 transition-all duration-300">
         {!isPromptRetracted ? (
-          <div className={`w-full ${WIDTH_CONFIG[contentWidth].maxW} mx-auto py-6 transition-all duration-300`}>
-            {/* Mode Controls, Width Indicator & Retract Button */}
-            <div className="controls flex items-center justify-between gap-2 mb-3 overflow-x-auto">
-              <div className="flex items-center gap-2">
-                <span className="font-mono text-[0.65rem] uppercase text-[rgba(228,228,231,0.5)] shrink-0 mr-1">
-                  MODE:
-                </span>
-                {MODES.map((m) => {
-                  const isSelected = selectedMode === m.id;
-                  return (
-                    <button
-                      key={m.id}
-                      id={`mode-select-${m.id}`}
-                      type="button"
-                      onClick={() => setSelectedMode(m.id)}
-                      className={`pill-btn ${isSelected ? "active" : ""}`}
-                    >
-                      {m.label}
-                    </button>
-                  );
-                })}
-
-                {/* Quick Pin Location Action */}
+          <div className={`w-full ${WIDTH_CONFIG[contentWidth].maxW} mx-auto py-5 transition-all duration-300`}>
+            {/* Top Toolbar: Format Switcher, Width, and Retract */}
+            <div className="flex items-center justify-between gap-2 mb-3">
+              {/* Left: Editor Format Toggle */}
+              <div className="flex items-center gap-1.5 bg-[#141415] p-1 border border-[rgba(228,228,231,0.15)] rounded">
                 <button
-                  id="prompt-pin-location-btn"
+                  type="button"
+                  id="rich-text-format-btn"
+                  onClick={() => setEditorFormat("rich")}
+                  className={`px-2.5 py-1 text-[0.6rem] font-mono uppercase tracking-wider rounded transition-colors flex items-center gap-1.5 cursor-pointer ${
+                    editorFormat === "rich"
+                      ? "bg-[#d4ff33] text-[#0c0c0d] font-bold shadow-sm"
+                      : "text-[rgba(228,228,231,0.6)] hover:text-[#e4e4e7]"
+                  }`}
+                >
+                  <PenLine className="w-3 h-3" />
+                  <span>Rich Text (Quill)</span>
+                </button>
+
+                <button
+                  type="button"
+                  id="plain-prompt-format-btn"
+                  onClick={() => setEditorFormat("plain")}
+                  className={`px-2.5 py-1 text-[0.6rem] font-mono uppercase tracking-wider rounded transition-colors flex items-center gap-1.5 cursor-pointer ${
+                    editorFormat === "plain"
+                      ? "bg-[#d4ff33] text-[#0c0c0d] font-bold shadow-sm"
+                      : "text-[rgba(228,228,231,0.6)] hover:text-[#e4e4e7]"
+                  }`}
+                >
+                  <Type className="w-3 h-3" />
+                  <span>Quick Prompt</span>
+                </button>
+              </div>
+
+              {/* Right: Width and Retract */}
+              <div className="flex items-center gap-2">
+                <button
                   type="button"
                   onClick={() => setIsLocationPickerOpen(true)}
                   className={`pill-btn flex items-center gap-1 text-[0.6rem] ${
@@ -654,16 +780,8 @@ export function ReflectionEditor({
                   <span className="hidden sm:inline">
                     {interaction?.location ? interaction.location.name.slice(0, 16) + (interaction.location.name.length > 16 ? "..." : "") : "Pin Spot"}
                   </span>
-                  <span className="sm:hidden">Pin</span>
                 </button>
-              </div>
 
-              <div className="flex items-center gap-3 shrink-0">
-                <div className="hidden sm:flex items-center gap-1.5 font-mono text-[0.55rem] text-[rgba(228,228,231,0.4)] uppercase tracking-wider">
-                  <span>WIDTH: {WIDTH_CONFIG[contentWidth].label}</span>
-                </div>
-
-                {/* Retract Prompt Bar Button */}
                 <button
                   id="retract-prompt-btn"
                   type="button"
@@ -677,37 +795,116 @@ export function ReflectionEditor({
               </div>
             </div>
 
-            {/* Input Wrapper Form */}
-            <form onSubmit={handleSubmit}>
-              <div className="input-wrapper relative bg-[#18181b] p-4 border border-[rgba(228,228,231,0.1)] focus-within:border-[#d4ff33] transition-colors">
-                <textarea
-                  ref={textareaRef}
-                  id="journal-input-textarea"
-                  rows={2}
-                  value={inputText}
-                  onChange={(e) => setInputText(e.target.value)}
-                  onKeyDown={handleKeyDown}
-                  placeholder="CONTINUE REFLECTION... (ENTER TO SUBMIT, SHIFT+ENTER FOR NEWLINE)"
-                  className="w-full bg-transparent border-none text-[#e4e4e7] placeholder-[rgba(228,228,231,0.3)] font-sans resize-none outline-none text-[0.9rem] min-h-[60px] max-h-36 pr-14 custom-scroll"
+            {/* Main Input Composer */}
+            {editorFormat === "rich" ? (
+              <div className="flex flex-col gap-3">
+                <RichTextEditor
+                  value={richHtml}
+                  onChange={(html, text) => {
+                    setRichHtml(html);
+                    setRichPlainText(text);
+                  }}
+                  onSubmit={handleRichSubmit}
+                  onSave={handleSaveOnly}
+                  disabled={isLoading}
+                  placeholder="Draft your journal reflection... (use formatting, headers, lists, quotes, or code)"
+                  minHeight="120px"
                 />
 
-                <button
-                  id="send-reflection-btn"
-                  type="submit"
-                  disabled={!inputText.trim() || isLoading}
-                  aria-label="Send reflection"
-                  className="btn-circle w-10 h-10 rounded-full bg-[#d4ff33] hover:bg-[#e2ff66] active:scale-95 disabled:opacity-30 disabled:cursor-not-allowed flex items-center justify-center border-none absolute right-4 bottom-4 cursor-pointer transition-transform"
-                >
-                  <ArrowUp className="w-5 h-5 text-[#0c0c0d] stroke-[2.5]" />
-                </button>
-              </div>
-            </form>
+                {/* Sub-controls: Mode selector + Action buttons */}
+                <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="font-mono text-[0.6rem] uppercase text-[rgba(228,228,231,0.5)] shrink-0 mr-1">
+                      AI MODE:
+                    </span>
+                    {MODES.map((m) => {
+                      const isSelected = selectedMode === m.id;
+                      return (
+                        <button
+                          key={m.id}
+                          id={`mode-select-${m.id}`}
+                          type="button"
+                          onClick={() => setSelectedMode(m.id)}
+                          className={`pill-btn text-[0.6rem] py-1 px-2.5 ${isSelected ? "active" : ""}`}
+                        >
+                          {m.label}
+                        </button>
+                      );
+                    })}
+                  </div>
 
-            {/* Meta Strip Notice */}
-            <div className="meta-strip font-mono text-[0.55rem] text-[rgba(228,228,231,0.4)] uppercase tracking-[0.1em] flex items-center justify-between mt-2.5">
-              <span>INTELLECTUAL REFLECTION & BRAINSTORMING ONLY // FIRESTORE ISOLATED</span>
-              <span className="hidden sm:inline">ENTER TO SEND • SHIFT+ENTER FOR NEWLINE</span>
-            </div>
+                  <div className="flex items-center gap-2">
+                    {onSaveEntryOnly && (
+                      <button
+                        type="button"
+                        id="save-entry-only-btn"
+                        onClick={handleSaveOnly}
+                        disabled={(!richHtml.trim() && !richPlainText.trim()) || isSavingEntry || isLoading}
+                        className="px-3.5 py-1.5 bg-[#18181b] hover:bg-[#27272a] border border-[rgba(228,228,231,0.2)] hover:border-[#d4ff33] text-[#e4e4e7] font-mono text-xs font-bold uppercase tracking-wider rounded transition-all cursor-pointer flex items-center gap-1.5 disabled:opacity-30 disabled:cursor-not-allowed"
+                        title="Save formatted entry directly to Firestore"
+                      >
+                        <Save className="w-3.5 h-3.5 text-[#d4ff33]" />
+                        <span>{isSavingEntry ? "Saving..." : "Save Entry"}</span>
+                      </button>
+                    )}
+
+                    <button
+                      type="button"
+                      id="reflect-ai-btn"
+                      onClick={handleRichSubmit}
+                      disabled={(!richHtml.trim() && !richPlainText.trim()) || isLoading}
+                      className="px-4 py-1.5 bg-[#d4ff33] hover:bg-[#e2ff66] text-[#0c0c0d] font-mono text-xs font-bold uppercase tracking-wider rounded transition-all cursor-pointer flex items-center gap-2 disabled:opacity-30 disabled:cursor-not-allowed shadow-sm"
+                      title="Save entry and generate AI synthesis reflection"
+                    >
+                      <Sparkles className="w-3.5 h-3.5 stroke-[2.5]" />
+                      <span>{isLoading ? "Synthesizing..." : "Reflect with AI"}</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              /* Plain Quick Prompt Mode */
+              <form onSubmit={handleSubmit} className="flex flex-col gap-3">
+                <div className="input-wrapper relative bg-[#18181b] p-4 border border-[rgba(228,228,231,0.15)] focus-within:border-[#d4ff33] rounded transition-colors">
+                  <textarea
+                    ref={textareaRef}
+                    id="journal-input-textarea"
+                    rows={2}
+                    value={inputText}
+                    onChange={(e) => setInputText(e.target.value)}
+                    onKeyDown={handleKeyDown}
+                    placeholder="Quick reflection prompt... (ENTER TO SUBMIT, SHIFT+ENTER FOR NEWLINE)"
+                    className="w-full bg-transparent border-none text-[#e4e4e7] placeholder-[rgba(228,228,231,0.3)] font-sans resize-none outline-none text-[0.9rem] min-h-[60px] max-h-36 pr-14 custom-scroll"
+                  />
+
+                  <button
+                    id="send-reflection-btn"
+                    type="submit"
+                    disabled={!inputText.trim() || isLoading}
+                    aria-label="Send reflection"
+                    className="btn-circle w-10 h-10 rounded-full bg-[#d4ff33] hover:bg-[#e2ff66] active:scale-95 disabled:opacity-30 disabled:cursor-not-allowed flex items-center justify-center border-none absolute right-4 bottom-4 cursor-pointer transition-transform shadow-sm"
+                  >
+                    <ArrowUp className="w-5 h-5 text-[#0c0c0d] stroke-[2.5]" />
+                  </button>
+                </div>
+
+                <div className="flex items-center justify-between font-mono text-[0.55rem] text-[rgba(228,228,231,0.4)] uppercase tracking-wider">
+                  <div className="flex items-center gap-2">
+                    {MODES.map((m) => (
+                      <button
+                        key={m.id}
+                        type="button"
+                        onClick={() => setSelectedMode(m.id)}
+                        className={`pill-btn text-[0.6rem] py-0.5 px-2 ${selectedMode === m.id ? "active" : ""}`}
+                      >
+                        {m.label}
+                      </button>
+                    ))}
+                  </div>
+                  <span>PRESS ENTER TO SEND • SHIFT+ENTER FOR NEWLINE</span>
+                </div>
+              </form>
+            )}
           </div>
         ) : (
           /* Retracted Prompt Bar Dock */
@@ -750,6 +947,21 @@ export function ReflectionEditor({
             await onUpdateLocation(loc);
           }
         }}
+      />
+
+      {/* Edit Formatted Journal Entry Modal */}
+      <EditEntryModal
+        isOpen={Boolean(editingMessage)}
+        onClose={() => setEditingMessage(null)}
+        message={editingMessage}
+        onSave={async (messageId, updatedContent) => {
+          if (onUpdateMessage) {
+            await onUpdateMessage(messageId, updatedContent);
+          }
+        }}
+        onDelete={onDeleteMessage ? async (messageId) => {
+          await onDeleteMessage(messageId);
+        } : undefined}
       />
     </main>
   );
